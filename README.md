@@ -10,9 +10,9 @@ Shopify Webhook → TML (anomaly detection) → Rules Layer → **MAADS-BML (sup
 
 ## MAADS-BML
 
-✅ Supervised MAADS-BML training and holdout evaluation  
-✅ Holdout scoring notebook  
-✅ Strong holdout performance (fraud recall-focused)
+Supervised MAADS-BML training and holdout evaluation  
+Holdout scoring notebook  
+Strong holdout performance (fraud recall-focused)
 
 ### Latest Holdout Results
 
