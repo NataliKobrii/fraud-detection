@@ -1,0 +1,25 @@
+services:
+  maads:
+    image: ${MAADS_IMAGE}
+    container_name: maads
+    restart: unless-stopped
+    env_file:
+      - .env
+
+    # MAADS endpoints
+    ports:
+      - "${MAADS_TRAINING_PORT:-5595}:5595"
+      - "${MAADS_PREDICTION_PORT:-5495}:5495"
+
+    # MAADS files
+    volumes:
+      - ./${MAADS_ROOT:-maads_service}:/opt/maads/maads_service
+      - ./${MAADS_ROOT:-maads_service}/csvuploads:/opt/maads/maads_service/csvuploads
+      - ./${MAADS_ROOT:-maads_service}/prediction_runs:/opt/maads/maads_service/prediction_runs
+
+    # Healthcheck
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5595/ || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
