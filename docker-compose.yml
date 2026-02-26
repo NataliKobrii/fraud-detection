@@ -1,0 +1,177 @@
+# Fraud Detection Pipeline: Shopify → TML (TSS) → MAADS-BML → Final Score
+#
+# Services that must all run together:
+#
+#   1. tss        – TML Solution Studio (Airflow + Kafka + Viper + HPDE)
+#                   Runs all 8 DAGs. Airflow UI at http://localhost:9000
+#
+#   2. maadsbml   – MAADS-BML Batch AutoML container
+#                   Training REST API  → http://localhost:5595
+#                   Prediction REST API → http://localhost:5495
+#
+#   3. aggregator – BML score aggregator microservice
+#                   Consumes TML predictions from Kafka, calls MAADSBML at
+#                   port 5495 for each transaction, writes final fraud score
+#                   to shopify-fraud-scores topic.
+version: '3.8'
+
+services:
+
+  # 1. TML Solution Studio (TSS)
+  # Main TML container: Airflow + Kafka + Viper + HPDE + Viperviz
+  tss:
+    image: maadsdocker/tml-solution-studio-with-airflow-amd64
+    container_name: tml-fraud-tss
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:z
+      # dagslocalbackup: TSS stores DAG backup snapshots
+      - ./dagslocalbackup:/dagslocalbackup:z
+      # Mount DAGs into the TSS Airflow DAGs folder
+      - ./tml-airflow/dags:/fraud-detection/tml-airflow/dags:z
+    environment:
+      # Architecture
+      CHIP:               ${CHIP:-AMD64}
+      MAINHOST:           ${MAINHOST:-127.0.0.1}
+      AIRFLOW__CORE__DAGS_FOLDER: /fraud-detection/tml-airflow/dags/custom
+      PYTHONPATH: /fraud-detection/tml-airflow/dags/custom:/fraud-detection/tml-airflow/dags/custom
+
+      # TSS identity
+      TSS:                1
+      SOLUTIONNAME:       TSS
+      UPDATE:             1
+
+      # Ports
+      # Airflow UI will be at http://localhost:9000
+      AIRFLOWPORT:        ${AIRFLOWPORT:-9000}
+      # Viperviz dashboard at http://localhost:9005
+      VIPERVIZPORT:       ${VIPERVIZPORT:-9005}
+      # -1 = no external port exposure
+      EXTERNALPORT:       ${EXTERNALPORT:--1}
+
+      # Credentials
+      GITREPOURL:         ${GITREPOURL}
+      GITUSERNAME:        ${GITUSERNAME}
+      GITPASSWORD:        ${GITPASSWORD}
+      DOCKERUSERNAME:     ${DOCKERUSERNAME}
+      DOCKERPASSWORD:     ${DOCKERPASSWORD}
+      READTHEDOCS:        ${READTHEDOCS:-}
+
+      # Kafka
+      KAFKACLOUDUSERNAME: ${KAFKACLOUDUSERNAME:-}
+      KAFKACLOUDPASSWORD: ${KAFKACLOUDPASSWORD:-}
+
+      # Optional MQTT
+      MQTTUSERNAME:       ${MQTTUSERNAME:-}
+      MQTTPASSWORD:       ${MQTTPASSWORD:-}
+
+  # 1b. Shopify Webhook → Kafka
+  # Receives Shopify webhooks and produces raw events
+  # to Kafka topic shopify-orders-raw for TML preprocessing.
+  shopify_webhook:
+    build:
+      context: ./shopify-webhook
+      dockerfile: Dockerfile
+    container_name: tml-fraud-shopify-webhook
+    network_mode: host
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      - tss
+    environment:
+      PORT: ${SHOPIFY_WEBHOOK_PORT:-8000}
+
+    # Kafka broker is assumed to be inside TSS on host network
+      KAFKABROKER: ${KAFKABROKER:-127.0.0.1:9092}
+
+      SHOPIFY_RAW_TOPIC: ${SHOPIFY_RAW_TOPIC:-shopify-orders-raw}
+      SHOPIFY_WEBHOOK_SECRET: ${SHOPIFY_WEBHOOK_SECRET}
+
+  # 2. MAADS-BML Batch AutoML
+  # Ports: 5595 = Training API, 5495 = Prediction API, 10000 = Abort API
+  # network_mode: host so the aggregator can call 127.0.0.1:5495
+  maadsbml:
+    image: ${MAADSBML_IMAGE:-maadsdocker/maads-batch-automl-otics}
+    container_name: tml-fraud-maadsbml
+    restart: unless-stopped
+    volumes:
+      # a) csvuploads: PUT YOUR TRAINING CSV FILE HERE
+      - ./supervised/csvuploads:/maads/agentfilesdocker/dist/maadsweb/csvuploads:z
+      # b) pdfreports: MAADSBML writes PDF analysis reports here
+      - ./supervised/pdfreports:/maads/agentfilesdocker/dist/maadsweb/pdfreports:z
+      # c) autofeatures: MAADSBML writes auto-selected features here
+      - ./supervised/autofeatures:/maads/agentfilesdocker/dist/maadsweb/autofeatures:z
+      # d) outliers: MAADSBML writes detected outliers here
+      - ./supervised/outliers:/maads/agentfilesdocker/dist/maadsweb/outliers:z
+      # e) sqlloads: SYSTEM FOLDER - do not write here manually
+      - ./supervised/sqlloads:/maads/agentfilesdocker/dist/maadsweb/sqlloads:z
+      # f) networktemp: SYSTEM FOLDER - do not write here manually
+      - ./supervised/networktemp:/maads/agentfilesdocker/dist/maadsweb/networktemp:z
+      # g) networks: TRAINED MODELS ARE STORED HERE (your algorithm files)
+      - ./supervised/networks:/maads/agentfilesdocker/networks:z
+      # h) exception: ALGORITHM OUTPUT JSON - prediction results written here
+      - ./supervised/exception:/maads/agentfilesdocker/dist/maadsweb/exception:z
+      # i) staging: SYSTEM FOLDER - required by maadsbmlcode.py localstagingfolder
+      - ./supervised/staging:/maads/agentfilesdocker/dist/staging:z
+    environment:
+      # Ports MUST match the -p mappings and what maadsbmlcode.py uses
+      TRAININGPORT:     ${MAADSBML_TRAININGPORT:-5595}
+      PREDICTIONPORT:   ${MAADSBML_PREDICTIONPORT:-5495}
+      ABORTPORT:        ${MAADSBML_ABORTPORT:-10000}
+      COMPANYNAME:      ${MAADSBML_COMPANYNAME:-FraudDetection}
+      MAXRUNTIME:       ${MAADSBML_MAXRUNTIME:-20}
+      MAINHOST:         ${MAINHOST:-127.0.0.1}
+    # Expose MAADSBML ports to host (required — network_mode:host handles this
+    # on Linux; on Docker Desktop these explicit port bindings are also needed)
+    ports:
+      - "5595:5595"   # MAADSBML Training API
+      - "5495:5495"   # MAADSBML Prediction API
+      - "10000:10000" # MAADSBML Abort API
+
+  # 3. BML Score Aggregator
+  # Custom microservice that bridges TML streaming predictions with MAADSBML.
+  # Flow per transaction:
+  #   Kafka(shopify-fraud-predictions) → rules engine → MAADSBML prediction API
+  #   (port 5495) → composite score → Kafka(shopify-fraud-scores)
+  # Requires BOTH tss (Kafka) and maadsbml (prediction API) to be running.
+  aggregator:
+    network_mode: host
+    build:
+      context: .
+      dockerfile: Dockerfile.aggregator
+    container_name: tml-fraud-bml-aggregator
+    restart: unless-stopped
+    depends_on:
+      - tss
+      - maadsbml
+    environment:
+      # Kafka broker (local inside TSS, reachable via host networking)
+      KAFKABROKER:              ${KAFKABROKER:-127.0.0.1:9092}
+
+      # MAADSBML connection (must match maadsbml service ports above)
+      MAADSBML_HOST:            ${MAINHOST:-127.0.0.1}
+      MAADSBML_PREDICTIONPORT:  ${MAADSBML_PREDICTIONPORT:-5495}
+
+      # MAADSBML data paths INSIDE the aggregator container
+      # These are host paths bound into the aggregator so it can read
+      # exception output and write inference CSV files for MAADSBML
+      MAADSBML_EXCEPTION_DIR:   /app/supervised/exception
+      MAADSBML_STAGING_DIR:     /app/supervised/staging
+      MAADSBML_CSVUPLOADS_DIR:  /app/supervised/csvuploads
+      TML_PRED_TOPIC: shopify-fraud-predictions
+      TML_PREPROCESS_TOPIC: shopify-fraud-preprocess
+      FINAL_SCORE_TOPIC: shopify-fraud-scores
+
+      # Shopify webhook HMAC secret
+      SHOPIFY_WEBHOOK_SECRET:   ${SHOPIFY_WEBHOOK_SECRET:-your-shopify-secret-replace-me}
+      PYTHONUNBUFFERED:         1
+    volumes:
+      # Give aggregator read/write access to MAADSBML shared folders
+      # so it can write inference CSVs and read prediction JSON output
+      - ./supervised/exception:/app/supervised/exception:z
+      - ./supervised/staging:/app/supervised/staging:z
+      - ./supervised/csvuploads:/app/supervised/csvuploads:z
+      - ./supervised/networks:/app/supervised/networks:ro
+    command: python /app/scoring/bml_score_aggregator.py

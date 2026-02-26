@@ -1,0 +1,36 @@
+.env
+
+# MAADSBML System folders
+#supervised/sqlloads/
+#supervised/networktemp/
+#supervised/staging/
+#supervised/pdfreports/
+#supervised/autofeatures/
+#supervised/outliers/
+# Trained model files (large binary files — store with Git LFS if needed)
+#supervised/networks/
+# Prediction output JSON (runtime data)
+#supervised/exception/
+#supervised/csvuploads/*.csv
+!supervised/csvuploads/frauddata.csv
+
+# TML/Docker runtime folders
+dagslocalbackup/
+tml-airflow/dags/
+tml-airflow/logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Misc
+*.log
+.DS_Store
+
+# Git
+./idea

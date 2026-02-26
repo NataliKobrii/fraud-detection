@@ -1,0 +1,18 @@
+# Builds the BML Score Aggregator microservice container.
+
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# System deps — gcc needed for kafka-python C extensions
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# Python deps
+COPY requirements.aggregator.txt .
+RUN pip install --no-cache-dir -r requirements.aggregator.txt
+
+# Copy scoring code
+COPY scoring/ /app/scoring/
+CMD ["python", "/app/scoring/bml_score_aggregator.py"]
