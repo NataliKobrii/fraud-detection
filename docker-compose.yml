@@ -30,12 +30,14 @@ services:
       - ./dagslocalbackup:/dagslocalbackup:z
       # Mount DAGs into the TSS Airflow DAGs folder
       - ./tml-airflow/dags:/fraud-detection/tml-airflow/dags:z
+      # Mount logs into the TSS Airflow DAGs folder
+      - ./tml-airflow/logs:/fraud-detection/tml-airflow/logs
     environment:
       # Architecture
       CHIP:               ${CHIP:-AMD64}
       MAINHOST:           ${MAINHOST:-127.0.0.1}
-      AIRFLOW__CORE__DAGS_FOLDER: /fraud-detection/tml-airflow/dags/custom
-      PYTHONPATH: /fraud-detection/tml-airflow/dags/custom:/fraud-detection/tml-airflow/dags/custom
+      AIRFLOW__CORE__DAGS_FOLDER: /fraud-detection/tml-airflow/dags
+      PYTHONPATH: /fraud-detection/tml-airflow/dags:/fraud-detection/tml-airflow/dags
 
       # TSS identity
       TSS:                1
@@ -48,8 +50,8 @@ services:
       # Viperviz dashboard at http://localhost:9005
       VIPERVIZPORT:       ${VIPERVIZPORT:-9005}
       # -1 = no external port exposure
-      EXTERNALPORT:       ${EXTERNALPORT:--1}
-
+      EXTERNALPORT:       ${EXTERNALPORT:-9100}
+      CLIENTPORT: "9002"
       # Credentials
       GITREPOURL:         ${GITREPOURL}
       GITUSERNAME:        ${GITUSERNAME}
@@ -175,3 +177,31 @@ services:
       - ./supervised/csvuploads:/app/supervised/csvuploads:z
       - ./supervised/networks:/app/supervised/networks:ro
     command: python /app/scoring/bml_score_aggregator.py
+  tml-init:
+    image: maadsdocker/tml-solution-studio-with-airflow-amd64
+    container_name: tml-init
+    network_mode: host
+    restart: "no"
+    depends_on:
+      tss:
+        condition: service_started
+        required: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: ["bash","-lc"]
+    command:
+      - "set -Eeuo pipefail; set -x;
+         echo 'WAIT WEB';
+         for i in $(seq 1 180); do curl -fsS http://127.0.0.1:9000/ >/dev/null && break || true; sleep 2; done;
+         echo 'WAIT DAG VISIBLE';
+         for i in $(seq 1 180); do
+           docker exec -i tml-fraud-tss bash -lc 'airflow dags list | grep -q \"^solution_preprocessing_ml_restapi_dag\\b\"' && break;
+           sleep 2;
+         done;
+         echo 'UNPAUSE';
+         docker exec -i tml-fraud-tss bash -lc 'airflow dags unpause solution_preprocessing_ml_restapi_dag';
+         echo 'TRIGGER';
+         docker exec -i tml-fraud-tss bash -lc 'airflow dags trigger solution_preprocessing_ml_restapi_dag';
+         echo 'LIST RUNS';
+         docker exec -i tml-fraud-tss bash -lc 'airflow dags list-runs -d solution_preprocessing_ml_restapi_dag | head -n 8';
+         echo DONE"

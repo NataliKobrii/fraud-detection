@@ -17,6 +17,7 @@
 # TML/Docker runtime folders
 dagslocalbackup/
 tml-airflow/dags/
+!tml-airflow/dags/custom/
 tml-airflow/logs/
 
 # Python
